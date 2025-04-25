@@ -16,7 +16,8 @@ This project generates meme captions by using a combination of image captioning 
    ```bash
    python -m venv venv
    ```
-Activate the virtual environment:
+
+    Activate the virtual environment:
 
     On macOS/Linux:
 
@@ -36,4 +37,8 @@ Activate the virtual environment:
     pip install -r requirements.txt
     ```
 
-    
+3. To generate a meme caption from an image:
+
+   ```bash
+   python app.py path_to_your_image.jpg
+   ```
