@@ -40,9 +40,9 @@ def generate_caption(image):
 def random_instruction(caption):
     """Generate a slightly varied instruction to add randomness."""
     templates = [
-        f"Write a funny one-line meme about: {caption}",
+        f"Write a funny one-line meme about: {caption}. Keep it very short, under 10 words.",
         f"Make a hilarious meme caption for: {caption}",
-        f"Create a short meme text describing: {caption}",
+        f"Create a very short (under 10 words) funny meme caption for: {caption}",
         f"Come up with a meme for: {caption}",
         f"Write a clever meme line for: {caption}",
         f"Invent a funny short meme about: {caption}",
@@ -60,7 +60,7 @@ def make_it_funny(caption):
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 50,
+            "max_new_tokens": 25,
             "do_sample": True,
             "temperature": 1.0,
             "top_p": 0.95,
