@@ -1,8 +1,11 @@
+from flask import Flask, request, jsonify
 from transformers import BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
 import torch
 import requests
 from dotenv import load_dotenv
+from io import BytesIO
+import random
 import os
 
 # --- Load environment variables ---
@@ -24,9 +27,9 @@ blip_model = BlipForConditionalGeneration.from_pretrained(
 )
 
 # --- Functions ---
-def generate_caption(image_path):
+def generate_caption(image):
+    """Generate a caption for a PIL Image object."""
     print("Thinking... Generating caption for the image...")
-    image = Image.open(image_path).convert('RGB')
     inputs = blip_processor(images=image, return_tensors="pt")
     with torch.no_grad():
         output = blip_model.generate(**inputs)
@@ -34,13 +37,21 @@ def generate_caption(image_path):
     print("Caption generated:", caption)
     return caption
 
+def random_instruction(caption):
+    """Generate a slightly varied instruction to add randomness."""
+    templates = [
+        f"Write a funny one-line meme about: {caption}",
+        f"Make a hilarious meme caption for: {caption}",
+        f"Create a short meme text describing: {caption}",
+        f"Come up with a meme for: {caption}",
+        f"Write a clever meme line for: {caption}",
+        f"Invent a funny short meme about: {caption}",
+    ]
+    return random.choice(templates)
+
 def make_it_funny(caption):
-    instruction = (
-        f"Write one single short sentence as a funny meme caption for this: {caption}. "
-        "Do not write more than one sentence. End with a period."
-    )
-    
-    # Wrap instruction properly for Instruct models
+    """Send the caption to HuggingFace model to make it funny."""
+    instruction = random_instruction(caption)
     prompt = f"<s>[INST] {instruction} [/INST]"
 
     headers = {
@@ -49,19 +60,17 @@ def make_it_funny(caption):
     payload = {
         "inputs": prompt,
         "parameters": {
-            "max_new_tokens": 25,
+            "max_new_tokens": 50,
             "do_sample": True,
-            "temperature": 0.9,
+            "temperature": 1.0,
             "top_p": 0.95,
             "top_k": 50,
             "stop": ["</s>"]
         }
     }
 
-    # Perform the API request
     response = requests.post(HUGGINGFACE_MODEL_URL, headers=headers, json=payload)
     
-    # Debugging the response
     print("Response Status Code:", response.status_code)
     print("Response Text:", response.text)
     
@@ -70,11 +79,12 @@ def make_it_funny(caption):
         return "Error generating meme."
 
     result = response.json()
-
     full_text = result[0]['generated_text'] if isinstance(result, list) else result.get('generated_text', '')
 
-    # --- Clean the output ---
-    # Remove the prompt part
+    if not full_text:
+        print("Empty response, retrying...")
+        return make_it_funny(caption)
+
     if "[/INST]" in full_text:
         meme = full_text.split("[/INST]")[-1].strip()
     else:
@@ -82,15 +92,28 @@ def make_it_funny(caption):
 
     return meme
 
+# --- Flask App ---
+app = Flask(__name__)
 
+@app.route('/generate-meme', methods=['POST'])
+def generate_meme():
+    if 'image' not in request.files:
+        return jsonify({"error": "No image uploaded"}), 400
+    
+    file = request.files['image']
+
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+
+    try:
+        image = Image.open(BytesIO(file.read())).convert('RGB')
+        caption = generate_caption(image)
+        funny_meme = make_it_funny(caption)
+        return jsonify({"caption": caption, "funny_meme": funny_meme})
+    except Exception as e:
+        print("Error:", str(e))
+        return jsonify({"error": "Failed to process image"}), 500
 
 # --- Main ---
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 2:
-        print("Usage: python generate_meme_text.py path_to_image")
-    else:
-        print("Starting meme generation process...")
-        caption = generate_caption(sys.argv[1])
-        funny = make_it_funny(caption)
-        print("Final Funny Meme Text:", funny)
+    app.run(host="0.0.0.0", port=9090, debug=True)
