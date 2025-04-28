@@ -9,6 +9,10 @@ import io # <-- Import io for in-memory bytes handling
 import base64 # <-- Import base64 for encoding image data
 import textwrap
 import re
+import time
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, message="TypedStorage is deprecated.*")
 
 # --- Constants ---
 FONT_PATH = "impact.ttf"
@@ -23,23 +27,28 @@ MAX_TEXT_WIDTH_RATIO = 0.90
 app = Flask(__name__)
 CORS(app)
 
+
+# Check if CUDA is available
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
+
+
 # Load BLIP model for image captioning
 print("Loading BLIP image captioning model...")
 blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base").to(device)
 
 # Load Mistral-7B model for humor generation
 print("Loading Mistral-7B model for humor generation...")
 mistral_tokenizer = AutoTokenizer.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2")
 mistral_tokenizer.pad_token = mistral_tokenizer.eos_token
-mistral_model = AutoModelForCausalLM.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2")
+mistral_model = AutoModelForCausalLM.from_pretrained("mistralai/Mistral-7B-Instruct-v0.2").to(device)
 
 # --- Functions ---
 def generate_caption(image):
     """Generate a caption for a given PIL image."""
     print("Thinking... Generating caption for the image...")
-    # image = Image.open(image_path).convert('RGB') # No need to open again if passed as PIL obj
-    inputs = blip_processor(images=image, return_tensors="pt")
+    inputs = blip_processor(images=image, return_tensors="pt").to(device)  # Move inputs to GPU
     with torch.no_grad():
         output = blip_model.generate(**inputs)
     caption = blip_processor.decode(output[0], skip_special_tokens=True)
@@ -62,13 +71,15 @@ def make_it_funny(caption, max_retries=2):
     """Generate a funny meme caption using Mistral-7B with retries and better cleaning."""
     print(f"Attempting to generate meme for caption: '{caption}'")
 
+    # Start time tracking for execution time
+    start_time = time.time()
+
+
     for attempt in range(max_retries):
-        print(f"Generation attempt {attempt + 1}/{max_retries}")
         instruction = random_instruction(caption)
         prompt = f"<s>[INST] {instruction} [/INST]"
-        print(f"Using prompt: {prompt}")
 
-        inputs = mistral_tokenizer(prompt, return_tensors="pt", padding=True)
+        inputs = mistral_tokenizer(prompt, return_tensors="pt", padding=True).to(device)
 
         with torch.no_grad():
             output = mistral_model.generate(
@@ -83,22 +94,18 @@ def make_it_funny(caption, max_retries=2):
             )
 
         full_decoded_output = mistral_tokenizer.decode(output[0], skip_special_tokens=False)
-        print(f"Attempt {attempt + 1} - Full raw output (incl. special tokens): {full_decoded_output}")
 
         decoded_output = mistral_tokenizer.decode(output[0], skip_special_tokens=True)
-        print(f"Attempt {attempt + 1} - Decoded output (no special tokens): {decoded_output}")
 
         funny_meme_raw = ""
         parts = decoded_output.split('[/INST]')
         if len(parts) > 1:
             funny_meme_raw = parts[-1].strip()
-            print(f"Attempt {attempt + 1} - Text after [/INST]: '{funny_meme_raw}'")
         else:
             instruction_pattern = re.escape(instruction)
             match = re.search(f'{instruction_pattern}\\s*\[/INST\]\\s*(.*)', decoded_output, re.DOTALL | re.IGNORECASE)
             if match:
                 funny_meme_raw = match.group(1).strip()
-                print(f"Attempt {attempt + 1} - Text found via regex after instruction: '{funny_meme_raw}'")
             else:
                 funny_meme_raw = decoded_output
                 print(f"Attempt {attempt + 1} - Couldn't reliably find meme text, using full output.")
@@ -116,7 +123,6 @@ def make_it_funny(caption, max_retries=2):
         # Basic check for minimum word count (at least 3 words to be considered a decent meme)
         if len(funny_meme_raw.split()) >= 3:
             funny_meme = remove_emojis(funny_meme_raw).upper()
-            print(f"Attempt {attempt + 1} - Cleaned, emoji-removed, and formatted meme: '{funny_meme}'")
             break
         else:
             print(f"Attempt {attempt + 1} - Generated text too short after cleaning: '{funny_meme_raw}'")
@@ -126,6 +132,12 @@ def make_it_funny(caption, max_retries=2):
         funny_meme = "I HAVE NO IDEA."
 
     print(f"Final meme text being returned: '{funny_meme}'")
+
+   # Log the time taken for meme generation in seconds
+    end_time = time.time()
+    execution_time = end_time - start_time
+    print(f"Execution Time: {execution_time:.4f} seconds")
+
     return funny_meme
 
 
