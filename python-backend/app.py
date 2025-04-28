@@ -8,6 +8,7 @@ import random
 import io # <-- Import io for in-memory bytes handling
 import base64 # <-- Import base64 for encoding image data
 import textwrap
+import re
 
 # --- Constants ---
 FONT_PATH = "impact.ttf"
@@ -47,16 +48,14 @@ def generate_caption(image):
 
 
 def random_instruction(caption):
-    """Generate a slightly varied instruction to add randomness."""
     templates = [
-        f"Write a funny one-line meme about: {caption}. Keep it very short, under 10 words.",
-        f"Make a hilarious meme caption for: {caption}",
-        f"Create a very short (under 10 words) funny meme caption for: {caption}",
-        f"Come up with a meme for: {caption}",
-        f"Write a clever meme line for: {caption}",
-        f"Invent a funny short meme about: {caption}",
+        f"Write exactly one short, funny meme caption (under 10 words) about: {caption}. No alternatives, no options.",
+        f"Make a very short (under 10 words) funny meme for: {caption}. Only one sentence, no multiple versions.",
+        f"Come up with a single short funny meme caption for: {caption}",
+        f"Write a single hilarious line for a meme about: {caption}.",
     ]
     return random.choice(templates)
+
 
 
 def make_it_funny(caption, max_retries=2):
@@ -74,83 +73,105 @@ def make_it_funny(caption, max_retries=2):
         with torch.no_grad():
             output = mistral_model.generate(
                 **inputs,
-                # Slightly increase max_new_tokens to give more room initially
-                max_new_tokens=50,
+                max_new_tokens=80,  # Increased max tokens for longer outputs
                 do_sample=True,
-                temperature=0.75, # Slightly adjusted temperature
+                temperature=0.75,
                 top_p=0.9,
                 top_k=50,
                 pad_token_id=mistral_tokenizer.eos_token_id,
-                # Add repetition penalty to discourage boring output
                 repetition_penalty=1.1
             )
 
-        # Decode the full output first for debugging
         full_decoded_output = mistral_tokenizer.decode(output[0], skip_special_tokens=False)
         print(f"Attempt {attempt + 1} - Full raw output (incl. special tokens): {full_decoded_output}")
 
-        # Decode skipping special tokens for processing
         decoded_output = mistral_tokenizer.decode(output[0], skip_special_tokens=True)
         print(f"Attempt {attempt + 1} - Decoded output (no special tokens): {decoded_output}")
 
-        # --- Improved Cleaning and Extraction ---
-        funny_meme = ""
-        # 1. Try splitting by [/INST]
+        funny_meme_raw = ""
         parts = decoded_output.split('[/INST]')
         if len(parts) > 1:
             funny_meme_raw = parts[-1].strip()
             print(f"Attempt {attempt + 1} - Text after [/INST]: '{funny_meme_raw}'")
         else:
-             # 2. Fallback: If [/INST] isn't there, maybe it just generated text after the prompt?
-             # Remove the original prompt text from the decoded output
-             # Use re.escape to handle special characters in the instruction if any
-             instruction_pattern = re.escape(instruction)
-             # Try to find text *after* the instruction part of the prompt
-             match = re.search(f'{instruction_pattern}\\s*\[/INST\]\\s*(.*)', decoded_output, re.DOTALL | re.IGNORECASE)
-             if match:
-                 funny_meme_raw = match.group(1).strip()
-                 print(f"Attempt {attempt + 1} - Text found via regex after instruction: '{funny_meme_raw}'")
-             else:
-                # Last resort: If prompt wasn't found either, maybe just take the end?
-                # This is less reliable.
-                funny_meme_raw = decoded_output # Keep the whole thing for now, clean later
-                print(f"Attempt {attempt + 1} - Couldn't find [/INST] or instruction pattern reliably.")
+            instruction_pattern = re.escape(instruction)
+            match = re.search(f'{instruction_pattern}\\s*\[/INST\]\\s*(.*)', decoded_output, re.DOTALL | re.IGNORECASE)
+            if match:
+                funny_meme_raw = match.group(1).strip()
+                print(f"Attempt {attempt + 1} - Text found via regex after instruction: '{funny_meme_raw}'")
+            else:
+                funny_meme_raw = decoded_output
+                print(f"Attempt {attempt + 1} - Couldn't reliably find meme text, using full output.")
 
-
-        # 3. Clean common model prefixes/artefacts (add more as you see them)
         prefixes_to_remove = [
             "Funny meme:", "Meme text:", "Here's a meme:", "Sure, here you go:",
             "Okay, here's a short meme:", "\"", "'"
         ]
         for prefix in prefixes_to_remove:
-             # Case-insensitive removal
             if funny_meme_raw.lower().startswith(prefix.lower()):
                 funny_meme_raw = funny_meme_raw[len(prefix):].strip()
 
-        # Remove potential trailing quotes or incomplete sentences
         funny_meme_raw = funny_meme_raw.strip(' "\'.')
 
-        # 4. Apply word limit and uppercase
-        if funny_meme_raw:
-            funny_meme_words = funny_meme_raw.split()
-            # Ensure it has at least 2 words to be considered valid
-            if len(funny_meme_words) >= 2:
-                 funny_meme = ' '.join(funny_meme_words[:10]).upper() # Keep the word limit
-                 print(f"Attempt {attempt + 1} - Cleaned and formatted meme: '{funny_meme}'")
-                 # If we got a valid meme, break the retry loop
-                 break
-            else:
-                print(f"Attempt {attempt + 1} - Generated text too short after cleaning: '{funny_meme_raw}'")
+        # Basic check for minimum word count (at least 3 words to be considered a decent meme)
+        if len(funny_meme_raw.split()) >= 3:
+            funny_meme = remove_emojis(funny_meme_raw).upper()
+            print(f"Attempt {attempt + 1} - Cleaned, emoji-removed, and formatted meme: '{funny_meme}'")
+            break
         else:
-            print(f"Attempt {attempt + 1} - No text extracted after cleaning.")
+            print(f"Attempt {attempt + 1} - Generated text too short after cleaning: '{funny_meme_raw}'")
 
-    # --- Final Check after Retries ---
     if not funny_meme:
         print("Failed to generate a valid meme after all attempts. Returning fallback.")
-        funny_meme = "I GOT NUTHIN'..." # Default fallback message
+        funny_meme = "I HAVE NO IDEA."
 
     print(f"Final meme text being returned: '{funny_meme}'")
     return funny_meme
+
+
+def wrap_text_to_fit(draw, text, font, max_width, stroke_width):
+    words = text.split()
+    lines = []
+    current_line = ""
+
+    for word in words:
+        test_line = current_line + (' ' if current_line else '') + word
+        try:
+            bbox = draw.textbbox((0, 0), test_line, font=font, stroke_width=stroke_width)
+            line_width = bbox[2] - bbox[0]
+        except AttributeError:
+            # Fallback for older Pillow
+            line_width = draw.textlength(test_line, font=font)
+
+        if line_width <= max_width:
+            current_line = test_line
+        else:
+            if current_line:
+                lines.append(current_line)
+            current_line = word  # Start new line
+
+    if current_line:
+        lines.append(current_line)
+
+    return '\n'.join(lines)
+
+
+
+def remove_emojis(text):
+    emoji_pattern = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"  # emoticons
+        "\U0001F300-\U0001F5FF"  # symbols & pictographs
+        "\U0001F680-\U0001F6FF"  # transport & map symbols
+        "\U0001F1E0-\U0001F1FF"  # flags (iOS)
+        "\U00002700-\U000027BF"  # Dingbats
+        "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+        "\U00002600-\U000026FF"  # Miscellaneous Symbols
+        "\U00002B00-\U00002BFF"  # Miscellaneous Symbols and Arrows
+        "]+",
+        flags=re.UNICODE
+    )
+    return emoji_pattern.sub(r'', text)
 
 
 def draw_text_on_image(image, text):
@@ -191,7 +212,7 @@ def draw_text_on_image(image, text):
     if original_text_width <= max_text_pixel_width:
         # Text fits on one line
         print("Text fits on a single line.")
-        wrapped_text = text
+        wrapped_text = wrap_text_to_fit(draw, text, font, max_text_pixel_width, stroke_width)
         # Use multiline_textbbox even for single line for consistency in positioning calculation
         try:
             final_bbox = draw.multiline_textbbox((0, 0), wrapped_text, font=font, stroke_width=stroke_width, align="center")
